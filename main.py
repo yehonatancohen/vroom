@@ -64,7 +64,7 @@ async def run_scan(app: Application):
     cfg = db.get_config()
     logger.info("Running scan with config: %s", cfg)
 
-    listings = scraper.scrape(cfg)
+    listings = await scraper.scrape(cfg)
     if not listings:
         logger.info("Scan returned 0 results.")
         _schedule_next(app, cfg.get("scan_interval", 30))

@@ -235,12 +235,12 @@ def _extract_items(data: dict) -> list[dict]:
     return [i for i in items if isinstance(i, dict)]
 
 
-def scrape(cfg: dict) -> list[Listing]:
+async def scrape(cfg: dict) -> list[Listing]:
     delay = random.uniform(2, 5)
-    import time; time.sleep(delay)
+    await asyncio.sleep(delay)
 
     try:
-        raw_items = asyncio.run(_scrape_with_playwright(cfg))
+        raw_items = await _scrape_with_playwright(cfg)
     except Exception as e:
         logger.error("Playwright scrape failed: %s", e)
         return []
