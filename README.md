@@ -2,7 +2,27 @@
 
 Telegram bot that scrapes Yad2 used cars and sends new matches to you.
 
-## Setup
+## Quick start (Docker — recommended)
+
+```bash
+cp .env.example .env
+# Edit .env with your BOT_TOKEN and TELEGRAM_USER_ID
+docker compose up -d
+```
+
+Logs:
+```bash
+docker compose logs -f
+```
+
+Stop:
+```bash
+docker compose down
+```
+
+The SQLite database is stored in a named Docker volume (`yad2bot_data`) and survives container restarts/rebuilds.
+
+## Local setup (without Docker)
 
 ```bash
 pip install -r requirements.txt
