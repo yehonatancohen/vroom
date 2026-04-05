@@ -73,6 +73,10 @@ async def run_scan(app: Application):
 
     if not listings:
         logger.info("Scan returned 0 results.")
+        try:
+            await app.bot.send_message(chat_id=TELEGRAM_USER_ID, text="🔍 הסריקה הושלמה — לא נמצאו מודעות חדשות.")
+        except Exception as e:
+            logger.warning("Failed to send no-results notification: %s", e)
         _schedule_next(app, cfg.get("scan_interval", 30))
         return
 
