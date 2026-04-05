@@ -141,7 +141,14 @@ async def _scrape_with_playwright(cfg: dict) -> list[dict]:
     captured: list[dict] = []
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        )
         context = await browser.new_context(
             locale="he-IL",
             user_agent=(
@@ -149,7 +156,20 @@ async def _scrape_with_playwright(cfg: dict) -> list[dict]:
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
+            viewport={"width": 1280, "height": 800},
+            java_script_enabled=True,
+            extra_http_headers={
+                "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            },
         )
+        # Hide automation signals
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['he-IL','he','en-US','en']});
+            window.chrome = {runtime: {}};
+        """)
         page = await context.new_page()
 
         api_response_future: asyncio.Future = asyncio.get_event_loop().create_future()
@@ -159,7 +179,7 @@ async def _scrape_with_playwright(cfg: dict) -> list[dict]:
             ct = response.headers.get("content-type", "")
             if "json" in ct and API_HOST in url:
                 logger.debug("Intercepted JSON from %s (status %s)", url, response.status)
-            if (API_HOST in url or "yad2.co.il" in url) and "vehicles" in url:
+            if (API_HOST in url or "yad2.co.il" in url) and "vehicles" in url and response.status == 200:
                 logger.info("Candidate API URL: %s (status %s)", url, response.status)
                 if not api_response_future.done():
                     try:
