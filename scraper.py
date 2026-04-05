@@ -155,7 +155,12 @@ async def _scrape_with_playwright(cfg: dict) -> list[dict]:
         api_response_future: asyncio.Future = asyncio.get_event_loop().create_future()
 
         async def handle_response(response):
-            if API_HOST in response.url and "vehicles/cars" in response.url:
+            url = response.url
+            ct = response.headers.get("content-type", "")
+            if "json" in ct and API_HOST in url:
+                logger.debug("Intercepted JSON from %s (status %s)", url, response.status)
+            if (API_HOST in url or "yad2.co.il" in url) and "vehicles" in url:
+                logger.info("Candidate API URL: %s (status %s)", url, response.status)
                 if not api_response_future.done():
                     try:
                         body = await response.json()
@@ -166,10 +171,12 @@ async def _scrape_with_playwright(cfg: dict) -> list[dict]:
         page.on("response", handle_response)
 
         await page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+        # Give JS time to fire the XHR/fetch after DOM is ready
+        await page.wait_for_timeout(3000)
 
-        # Wait up to 15s for the API call to be intercepted
+        # Wait up to 20s for the API call to be intercepted
         try:
-            data = await asyncio.wait_for(api_response_future, timeout=15)
+            data = await asyncio.wait_for(api_response_future, timeout=20)
             captured = _extract_items(data)
         except asyncio.TimeoutError:
             logger.warning("API response not intercepted; falling back to DOM parsing.")
