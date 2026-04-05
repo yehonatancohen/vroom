@@ -18,11 +18,19 @@ def format_listing(listing: Listing) -> str:
         details.append(f"🛣 {listing.km:,} ק\"מ")
     if listing.hand:
         details.append(f"✋ יד {listing.hand}")
+    if listing.color:
+        details.append(f"🎨 {listing.color}")
     if listing.city:
         details.append(f"📍 {listing.city}")
 
     if details:
         lines.append("  |  ".join(details))
+
+    if listing.test_date:
+        lines.append(f"🔧 טסט עד: {listing.test_date}")
+
+    if listing.listed_at:
+        lines.append(f"🕐 פורסם: {listing.listed_at.strftime('%d/%m/%Y %H:%M')}")
 
     lines.append(f"\n🔗 [לצפייה במודעה]({listing.listing_url})")
 

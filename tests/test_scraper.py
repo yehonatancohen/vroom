@@ -1,5 +1,6 @@
 import json
 import pytest
+from datetime import datetime
 from unittest.mock import patch, MagicMock
 
 from scraper import (
@@ -9,6 +10,7 @@ from scraper import (
     _extract_items,
     _extract_next_data,
     _extract_from_html,
+    _extract_detail,
     build_search_url,
     scrape,
     Listing,
@@ -71,21 +73,28 @@ def test_build_url_params_empty():
 
 
 # ---------------------------------------------------------------------------
-# _parse_listing
+# _parse_listing — search result format
 # ---------------------------------------------------------------------------
 
 SAMPLE_ITEM = {
-    "id": "abc123",
-    "manufacturer": "טויוטה",
-    "model": "קורולה",
-    "subModel": "GLi",
-    "price": "55,000",
-    "km": "120,000",
-    "year": 2018,
-    "hand": 2,
-    "city": "תל אביב",
-    "images": [{"src": "https://img.example.com/car.jpg"}],
     "token": "abc123",
+    "orderId": 123,
+    "manufacturer": {"id": 1, "text": "טויוטה"},
+    "model": {"id": 2, "text": "קורולה"},
+    "subModel": {"id": 3, "text": "GLi"},
+    "price": 55000,
+    "vehicleDates": {"yearOfProduction": 2018},
+    "hand": {"id": 2, "text": "יד שניה"},
+    "address": {"area": {"id": 1, "text": "תל אביב"}, "city": {"id": "5000", "text": "תל אביב"}},
+    "metaData": {"coverImage": "https://img.example.com/car.jpg"},
+}
+
+SAMPLE_DETAIL = {
+    **SAMPLE_ITEM,
+    "km": 120000,
+    "color": {"id": 35, "text": "לבן"},
+    "vehicleDates": {"yearOfProduction": 2018, "testDate": "2026-09-01T00:00:00"},
+    "dates": {"createdAt": "2025-11-17T20:34:59"},
 }
 
 
@@ -95,12 +104,19 @@ def test_parse_listing_basic():
     assert listing.listing_id == "abc123"
     assert listing.title == "טויוטה קורולה GLi"
     assert listing.price == 55000
-    assert listing.km == 120000
     assert listing.year == 2018
     assert listing.hand == 2
     assert listing.city == "תל אביב"
     assert listing.image_url == "https://img.example.com/car.jpg"
     assert listing.listing_url == "https://www.yad2.co.il/item/abc123"
+
+
+def test_parse_listing_with_detail():
+    listing = _parse_listing(SAMPLE_ITEM, SAMPLE_DETAIL)
+    assert listing.km == 120000
+    assert listing.color == "לבן"
+    assert listing.test_date == "09/2026"
+    assert listing.listed_at == datetime(2025, 11, 17, 20, 34, 59)
 
 
 def test_parse_listing_missing_id_returns_none():
@@ -114,14 +130,8 @@ def test_parse_listing_bad_price():
     assert listing.price is None
 
 
-def test_parse_listing_image_string_list():
-    item = {**SAMPLE_ITEM, "images": ["https://img.example.com/x.jpg"]}
-    listing = _parse_listing(item)
-    assert listing.image_url == "https://img.example.com/x.jpg"
-
-
 def test_parse_listing_fallback_image():
-    item = {**SAMPLE_ITEM, "images": [], "mainImage": "https://img.example.com/main.jpg"}
+    item = {**SAMPLE_ITEM, "metaData": {}, "mainImage": "https://img.example.com/main.jpg"}
     listing = _parse_listing(item)
     assert listing.image_url == "https://img.example.com/main.jpg"
 
@@ -135,7 +145,7 @@ def make_listing(**kwargs) -> Listing:
         listing_id="1", title="טויוטה קורולה", price=50000,
         km=80000, year=2018, hand=1, city="חיפה",
         image_url=None, listing_url="https://www.yad2.co.il/item/1",
-        brand="טויוטה",
+        brand="טויוטה", color=None, test_date=None, listed_at=None,
     )
     defaults.update(kwargs)
     return Listing(**defaults)
@@ -199,6 +209,26 @@ def test_extract_next_data_bad_json():
 
 
 # ---------------------------------------------------------------------------
+# _extract_detail
+# ---------------------------------------------------------------------------
+
+def test_extract_detail_correct_path():
+    listing_data = {"token": "abc", "km": 50000, "color": {"id": 1, "text": "אדום"}}
+    payload = {
+        "props": {"pageProps": {"dehydratedState": {"queries": [
+            {"state": {"data": listing_data}}
+        ]}}}
+    }
+    html = f'<script id="__NEXT_DATA__">{json.dumps(payload)}</script>'
+    result = _extract_detail(html)
+    assert result == listing_data
+
+
+def test_extract_detail_missing_returns_none():
+    assert _extract_detail("<html></html>") is None
+
+
+# ---------------------------------------------------------------------------
 # _extract_from_html
 # ---------------------------------------------------------------------------
 
@@ -222,20 +252,19 @@ SAMPLE_HTML = """
 
 def test_extract_from_html_finds_items():
     items = _extract_from_html(SAMPLE_HTML, "https://www.yad2.co.il/vehicles/cars")
-    # Should find items via the /item/ link fallback
     ids = [i.get("id") or i.get("token") for i in items]
     assert "t1" in ids
     assert "t2" in ids
 
 
 # ---------------------------------------------------------------------------
-# scrape (HTTP mocked)
+# scrape (HTTP + detail mocked)
 # ---------------------------------------------------------------------------
 
 RAW_ITEMS = [
-    {**SAMPLE_ITEM, "manufacturer": "טויוטה"},
-    {**SAMPLE_ITEM, "id": "ad1", "type": "ad"},
-    {**SAMPLE_ITEM, "id": "xyz", "manufacturer": "הונדה"},
+    {**SAMPLE_ITEM, "token": "abc123"},
+    {**SAMPLE_ITEM, "token": "ad1", "type": "ad"},
+    {**SAMPLE_ITEM, "token": "xyz", "manufacturer": {"id": 9, "text": "הונדה"}},
 ]
 
 CFG = {
@@ -250,14 +279,19 @@ CFG = {
 
 
 def test_scrape_filters_ads_and_brands():
+    detail = {**SAMPLE_DETAIL, "token": "abc123"}
     with patch("scraper._fetch_html", return_value="<html></html>"), \
          patch("scraper._extract_next_data", return_value=RAW_ITEMS), \
+         patch("scraper.fetch_listing_detail", return_value=detail), \
          patch("scraper.time") as mock_time:
         mock_time.sleep = MagicMock()
         listings = scrape(CFG)
 
     assert len(listings) == 1
     assert listings[0].brand == "טויוטה"
+    assert listings[0].km == 120000
+    assert listings[0].color == "לבן"
+    assert listings[0].test_date == "09/2026"
 
 
 def test_scrape_returns_empty_on_http_error():
@@ -269,14 +303,29 @@ def test_scrape_returns_empty_on_http_error():
     assert listings == []
 
 
-def test_scrape_falls_back_to_html_when_no_next_data():
-    payload = {"props": {"pageProps": {"feed_items": [
-        {"id": "n1", "manufacturer": "טויוטה", "token": "n1"},
-    ]}}}
-    html = f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(payload)}</script>'
-    with patch("scraper._fetch_html", return_value=html), \
+def test_scrape_since_filters_old_listings():
+    since = datetime(2026, 1, 1)
+    old_detail = {**SAMPLE_DETAIL, "token": "abc123",
+                  "dates": {"createdAt": "2025-06-01T10:00:00"}}
+    with patch("scraper._fetch_html", return_value="<html></html>"), \
+         patch("scraper._extract_next_data", return_value=[RAW_ITEMS[0]]), \
+         patch("scraper.fetch_listing_detail", return_value=old_detail), \
          patch("scraper.time") as mock_time:
         mock_time.sleep = MagicMock()
-        listings = scrape({**CFG, "brands": []})
+        listings = scrape(CFG, since=since)
 
-    assert any(l.listing_id == "n1" for l in listings)
+    assert listings == []
+
+
+def test_scrape_since_includes_new_listings():
+    since = datetime(2025, 1, 1)
+    new_detail = {**SAMPLE_DETAIL, "token": "abc123",
+                  "dates": {"createdAt": "2025-11-17T20:34:59"}}
+    with patch("scraper._fetch_html", return_value="<html></html>"), \
+         patch("scraper._extract_next_data", return_value=[RAW_ITEMS[0]]), \
+         patch("scraper.fetch_listing_detail", return_value=new_detail), \
+         patch("scraper.time") as mock_time:
+        mock_time.sleep = MagicMock()
+        listings = scrape(CFG, since=since)
+
+    assert len(listings) == 1

@@ -4,6 +4,7 @@ import logging
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -38,6 +39,9 @@ class Listing:
     image_url: Optional[str]
     listing_url: str
     brand: Optional[str] = field(default=None)
+    color: Optional[str] = field(default=None)
+    test_date: Optional[str] = field(default=None)   # "MM/YYYY"
+    listed_at: Optional[datetime] = field(default=None)
 
 
 def build_search_url(cfg: dict) -> str:
@@ -99,7 +103,7 @@ def _fetch_html(url: str) -> str:
 
 
 def _extract_next_data(html: str) -> list[dict]:
-    """Try to pull listing items from the __NEXT_DATA__ JSON Yad2 embeds in the page."""
+    """Pull listing items from the __NEXT_DATA__ JSON Yad2 embeds in the page."""
     match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
     if not match:
         return []
@@ -108,7 +112,6 @@ def _extract_next_data(html: str) -> list[dict]:
     except json.JSONDecodeError:
         return []
 
-    # Walk the props tree looking for feed_items / items arrays
     def find_items(obj, depth=0):
         if depth > 10:
             return []
@@ -134,11 +137,40 @@ def _extract_next_data(html: str) -> list[dict]:
     return [i for i in items if isinstance(i, dict)]
 
 
+def _extract_detail(html: str) -> Optional[dict]:
+    """Extract the full listing dict from a detail page's __NEXT_DATA__."""
+    match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(1))
+        return (
+            data
+            .get("props", {})
+            .get("pageProps", {})
+            .get("dehydratedState", {})
+            .get("queries", [{}])[0]
+            .get("state", {})
+            .get("data")
+        )
+    except (json.JSONDecodeError, IndexError, AttributeError):
+        return None
+
+
+def fetch_listing_detail(token: str) -> Optional[dict]:
+    """Fetch the detail page for a listing and return its raw data dict."""
+    url = f"https://www.yad2.co.il/item/{token}"
+    try:
+        time.sleep(random.uniform(0.5, 1.5))
+        html = _fetch_html(url)
+        return _extract_detail(html)
+    except Exception as e:
+        logger.warning("Failed to fetch detail for %s: %s", token, e)
+        return None
+
+
 def _extract_from_html(html: str, page_url: str) -> list[dict]:
-    """
-    Fallback: parse visible feed cards from HTML.
-    Uses image src as a stable token (yad2-scraper approach).
-    """
+    """Fallback: parse visible feed cards from HTML."""
     soup = BeautifulSoup(html, "html.parser")
     items = []
 
@@ -150,7 +182,6 @@ def _extract_from_html(html: str, page_url: str) -> list[dict]:
     )
 
     if not cards:
-        # Last resort: any <a> with /item/ href
         for a in soup.select("a[href*='/item/']"):
             token = a["href"].rstrip("/").split("/")[-1]
             img = a.find("img")
@@ -165,7 +196,6 @@ def _extract_from_html(html: str, page_url: str) -> list[dict]:
     for card in cards:
         item: dict = {}
 
-        # ID / token
         for attr in ("data-id", "data-order-id", "id"):
             val = card.get(attr, "").strip()
             if val and not val.startswith("feed"):
@@ -205,66 +235,85 @@ def _text(field) -> str:
     return str(field) if field else ""
 
 
-def _parse_listing(item: dict) -> Optional["Listing"]:
+def _parse_dt(raw: Optional[str]) -> Optional[datetime]:
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw[:19], fmt[:len(raw[:19])])
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_listing(item: dict, detail: Optional[dict] = None) -> Optional["Listing"]:
+    """Parse a search-result item, optionally enriched with detail-page data."""
     try:
-        lid = str(item.get("token") or item.get("id") or item.get("orderId", ""))
+        src = detail if detail else item
+        lid = str(src.get("token") or src.get("id") or src.get("orderId", "")
+                  or item.get("token") or item.get("id") or item.get("orderId", ""))
         if not lid:
             return None
 
-        manufacturer = _text(item.get("manufacturer"))
-        model = _text(item.get("model"))
-        sub_model = _text(item.get("subModel"))
-        title_parts = [manufacturer, model, sub_model]
-        title = " ".join(p for p in title_parts if p).strip() or item.get("title", "") or lid
+        manufacturer = _text(src.get("manufacturer") or item.get("manufacturer"))
+        model = _text(src.get("model") or item.get("model"))
+        sub_model = _text(src.get("subModel") or item.get("subModel"))
+        title = " ".join(p for p in [manufacturer, model, sub_model] if p).strip() or lid
 
-        price_raw = item.get("price")
+        price_raw = src.get("price") or item.get("price")
         try:
             price = int(str(price_raw).replace(",", "").replace("₪", "").strip()) if price_raw else None
         except (ValueError, AttributeError):
             price = None
 
-        km_raw = item.get("km") or item.get("kilometers")
+        km_raw = src.get("km") or src.get("kilometers")
         try:
-            km = int(str(km_raw).replace(",", "").strip()) if km_raw else None
+            km = int(str(km_raw).replace(",", "").strip()) if km_raw is not None else None
         except (ValueError, AttributeError):
             km = None
 
-        # year: flat int or nested in vehicleDates
-        year_raw = item.get("year") or (item.get("vehicleDates") or {}).get("yearOfProduction")
+        vehicle_dates = src.get("vehicleDates") or item.get("vehicleDates") or {}
+        year_raw = src.get("year") or vehicle_dates.get("yearOfProduction")
         try:
             year = int(year_raw) if year_raw else None
         except (ValueError, TypeError):
             year = None
 
-        # hand: flat int or {id, text} dict
-        hand_raw = item.get("hand")
+        hand_raw = src.get("hand") or item.get("hand")
         try:
             hand = int(hand_raw["id"]) if isinstance(hand_raw, dict) else (int(hand_raw) if hand_raw else None)
         except (ValueError, TypeError, KeyError):
             hand = None
 
-        # city: flat string or nested address.area.text
+        address = src.get("address") or item.get("address") or {}
         city = (
-            item.get("city")
-            or item.get("area")
-            or _text((item.get("address") or {}).get("area"))
+            _text(address.get("city"))
+            or _text(address.get("area"))
+            or item.get("city")
         ) or None
 
-        # images: metaData.coverImage / metaData.images[], or legacy fields
-        meta = item.get("metaData") or {}
-        image_url = meta.get("coverImage")
-        if not image_url:
-            meta_images = meta.get("images") or []
-            image_url = meta_images[0] if meta_images else None
-        if not image_url:
-            images = item.get("images") or []
-            if isinstance(images, list) and images:
-                first = images[0]
-                image_url = first.get("src") or first.get("url") if isinstance(first, dict) else first
-        if not image_url:
-            image_url = item.get("mainImage") or item.get("image")
+        meta = src.get("metaData") or item.get("metaData") or {}
+        image_url = (
+            meta.get("coverImage")
+            or (meta.get("images") or [None])[0]
+            or item.get("mainImage") or item.get("image")
+        )
 
-        token = item.get("token") or lid
+        color = _text(src.get("color")) or None
+
+        test_date_raw = vehicle_dates.get("testDate")
+        test_date = None
+        if test_date_raw:
+            try:
+                dt = datetime.strptime(test_date_raw[:10], "%Y-%m-%d")
+                test_date = f"{dt.month:02d}/{dt.year}"
+            except ValueError:
+                pass
+
+        dates = src.get("dates") or {}
+        listed_at = _parse_dt(dates.get("createdAt"))
+
+        token = src.get("token") or item.get("token") or lid
         listing_url = f"https://www.yad2.co.il/item/{token}"
 
         return Listing(
@@ -278,6 +327,9 @@ def _parse_listing(item: dict) -> Optional["Listing"]:
             image_url=image_url,
             listing_url=listing_url,
             brand=manufacturer,
+            color=color,
+            test_date=test_date,
+            listed_at=listed_at,
         )
     except Exception as e:
         logger.warning("Failed to parse listing: %s", e)
@@ -308,7 +360,11 @@ def _extract_items(data: dict) -> list[dict]:
     return [i for i in items if isinstance(i, dict)]
 
 
-def scrape(cfg: dict) -> list[Listing]:
+def scrape(cfg: dict, since: Optional[datetime] = None) -> list[Listing]:
+    """
+    Fetch search results and enrich each new listing with detail-page data.
+    `since`: if set, only return listings created after this datetime.
+    """
     time.sleep(random.uniform(2, 5))
 
     url = build_search_url(cfg)
@@ -320,7 +376,6 @@ def scrape(cfg: dict) -> list[Listing]:
         logger.error("HTTP error scraping Yad2: %s", e)
         return []
 
-    # Try __NEXT_DATA__ first (richest data), fall back to HTML parsing
     raw_items = _extract_next_data(html)
     if not raw_items:
         logger.info("No __NEXT_DATA__ items found, falling back to HTML parsing")
@@ -332,9 +387,24 @@ def scrape(cfg: dict) -> list[Listing]:
     for item in raw_items:
         if item.get("type") in ("ad", "banner", "yad1"):
             continue
-        listing = _parse_listing(item)
-        if listing and _matches_brands(listing, brands_filter):
-            listings.append(listing)
+
+        # Quick brand pre-filter using search-result data before fetching detail
+        pre = _parse_listing(item)
+        if not pre or not _matches_brands(pre, brands_filter):
+            continue
+
+        # Fetch detail page for km, color, test date, listed_at
+        token = item.get("token") or pre.listing_id
+        detail = fetch_listing_detail(token)
+        listing = _parse_listing(item, detail)
+        if not listing:
+            continue
+
+        if since and listing.listed_at and listing.listed_at <= since:
+            logger.debug("Skipping %s listed at %s (before since=%s)", token, listing.listed_at, since)
+            continue
+
+        listings.append(listing)
 
     logger.info("Scraped %d matching listings", len(listings))
     return listings

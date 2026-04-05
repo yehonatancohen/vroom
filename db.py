@@ -1,6 +1,7 @@
 import sqlite3
 import json
 from datetime import datetime
+from typing import Optional
 from config import DB_PATH, DEFAULT_CONFIG
 
 
@@ -82,3 +83,24 @@ def set_config_key(key: str, value):
 def reset_config():
     with get_conn() as conn:
         conn.execute("DELETE FROM user_config")
+
+
+def get_last_scan_time() -> Optional[datetime]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT value FROM user_config WHERE key = 'last_scan_time'"
+        ).fetchone()
+    if row:
+        try:
+            return datetime.fromisoformat(row["value"])
+        except ValueError:
+            pass
+    return None
+
+
+def set_last_scan_time(dt: datetime):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO user_config (key, value) VALUES ('last_scan_time', ?)",
+            (dt.isoformat(),),
+        )

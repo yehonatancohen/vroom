@@ -1,0 +1,76 @@
+{
+  "token": "mi6cd84s",
+  "orderId": 56201919,
+  "adType": "commercial",
+  "categoryId": 1,
+  "subcategoryId": 21,
+  "priority": 3,
+  "price": 13900,
+  "address": {
+    "area": {
+      "id": 51,
+      "text": "אזור רמלה - לוד"
+    }
+  },
+  "metaData": {
+    "coverImage": "https://img.yad2.co.il/Pic/202511/17/1_8/o/y2_1pa_010421_20251117203448.jpeg",
+    "images": [
+      "https://img.yad2.co.il/Pic/202511/17/1_8/o/y2_1pa_010421_20251117203448.jpeg",
+      "https://img.yad2.co.il/Pic/202511/17/1_8/o/y2_1pa_010882_20251117203449.jpeg",
+      "https://img.yad2.co.il/Pic/202511/17/1_8/o/y2_1pa_010050_20251117203449.jpeg",
+      "https://img.yad2.co.il/Pic/202511/17/1_8/o/y2_1pa_010004_20251117203449.jpeg",
+      "https://img.yad2.co.il/Pic/202511/17/1_8/o/y2_1pa_010013_20251117203449.jpeg"
+    ]
+  },
+  "commitment": [
+    "טסט לשנה"
+  ],
+  "tags": [
+    {
+      "name": "בהזדמנות",
+      "id": 691,
+      "priority": 10
+    },
+    {
+      "name": "חבל לפספס",
+      "id": 692,
+      "priority": 10
+    },
+    {
+      "name": "ייחודי",
+      "id": 693,
+      "priority": 10
+    }
+  ],
+  "packages": {
+    "isTradeInButton": true
+  },
+  "customer": {
+    "id": 6498713,
+    "agencyName": "B.T CAR"
+  },
+  "manufacturer": {
+    "id": 15,
+    "text": "דייהטסו"
+  },
+  "model": {
+    "id": 10176,
+    "text": "סיריון"
+  },
+  "subModel": {
+    "id": 103522,
+    "text": "CX אוט׳ 1.3 (87 כ״ס)"
+  },
+  "vehicleDates": {
+    "yearOfProduction": 2007
+  },
+  "engineType": {
+    "id": 1101,
+    "text": "בנזין"
+  },
+  "engineVolume": 1298,
+  "hand": {
+    "id": 2,
+    "text": "יד שניה"
+  }
+}

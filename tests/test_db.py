@@ -1,6 +1,6 @@
-import os
 import pytest
 import sqlite3
+from datetime import datetime
 
 import db
 from config import DEFAULT_CONFIG
@@ -71,3 +71,13 @@ def test_reset_config():
     db.reset_config()
     cfg = db.get_config()
     assert cfg["price_max"] == DEFAULT_CONFIG["price_max"]
+
+
+def test_last_scan_time_default_none():
+    assert db.get_last_scan_time() is None
+
+
+def test_set_and_get_last_scan_time():
+    dt = datetime(2025, 11, 17, 20, 34, 59)
+    db.set_last_scan_time(dt)
+    assert db.get_last_scan_time() == dt

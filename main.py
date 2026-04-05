@@ -64,8 +64,13 @@ async def run_scan(app: Application):
     cfg = db.get_config()
     logger.info("Running scan with config: %s", cfg)
 
+    since = db.get_last_scan_time()
+    scan_started_at = datetime.now()
+
     loop = asyncio.get_event_loop()
-    listings = await loop.run_in_executor(None, scraper.scrape, cfg)
+    listings = await loop.run_in_executor(None, scraper.scrape, cfg, since)
+    db.set_last_scan_time(scan_started_at)
+
     if not listings:
         logger.info("Scan returned 0 results.")
         _schedule_next(app, cfg.get("scan_interval", 30))
