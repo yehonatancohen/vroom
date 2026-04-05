@@ -64,7 +64,8 @@ async def run_scan(app: Application):
     cfg = db.get_config()
     logger.info("Running scan with config: %s", cfg)
 
-    listings = await scraper.scrape(cfg)
+    loop = asyncio.get_event_loop()
+    listings = await loop.run_in_executor(None, scraper.scrape, cfg)
     if not listings:
         logger.info("Scan returned 0 results.")
         _schedule_next(app, cfg.get("scan_interval", 30))
@@ -154,7 +155,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "פקודות זמינות:\n"
         "/config – הגדרות\n"
         "/status – סטטוס נוכחי\n"
-        "/scan – סריקה ידנית עכשיו"
+        "/scan – סריקה ידנית עכשיו\n"
+        "/url – הצג או שנה URL חיפוש מותאם"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
     _schedule_next(context.application, cfg.get("scan_interval", 30))
@@ -180,6 +182,29 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _deny(update)
     await update.message.reply_text("🔍 מתחיל סריקה...")
     await run_scan(context.application)
+
+
+async def cmd_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _authorized(update):
+        return await _deny(update)
+    args = context.args
+    if not args:
+        cfg = db.get_config()
+        current = cfg.get("search_url") or "לא מוגדר (נבנה מהגדרות)"
+        await update.message.reply_text(
+            f"🔗 *URL חיפוש נוכחי:*\n`{current}`\n\n"
+            "לשינוי: `/url <url>`\n"
+            "לאיפוס להגדרות: `/url reset`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    value = args[0].strip()
+    if value == "reset":
+        db.set_config_key("search_url", "")
+        await update.message.reply_text("✅ URL אופס — ייבנה מהגדרות.")
+    else:
+        db.set_config_key("search_url", value)
+        await update.message.reply_text(f"✅ URL עודכן:\n`{value}`", parse_mode=ParseMode.MARKDOWN)
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +473,7 @@ def main():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("config", cmd_config))
+    app.add_handler(CommandHandler("url", cmd_url))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 

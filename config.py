@@ -18,6 +18,7 @@ DEFAULT_CONFIG = {
     "hand_max": 3,          # 0 = any
     "scan_interval": 30,    # minutes
     "max_results": 5,       # 0 = unlimited
+    "search_url": "",       # if set, overrides the built URL
 }
 
 SUPPORTED_BRANDS = [

@@ -12,7 +12,10 @@
       "Bash(grep -oE '[,{]60313:\"\"\"\"[0-9a-f]+\"\"\"\"')",
       "Bash(grep -oE 'static.chunks.[^\"\"\"\"'\"''''\"'`+]{0,50}' /tmp/yad2_app.js)",
       "Bash(grep -oE '.{0,50}vehicles[^\"\"\"\"'\"''''\"'`]{0,50}gw[^\"\"\"\"'\"''''\"'`]{0,100}' /tmp/yad2_app.js)",
-      "Bash(grep -oE '0,rV\\\\.m\\\\\\)\\\\\\([^\\)]{0,80}\\\\\\)' /tmp/yad2_app.js)"
+      "Bash(grep -oE '0,rV\\\\.m\\\\\\)\\\\\\([^\\)]{0,80}\\\\\\)' /tmp/yad2_app.js)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)"
     ]
   }
 }

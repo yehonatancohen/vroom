@@ -1,15 +1,29 @@
 import random
-import asyncio
+import time
 import logging
 import json
 import re
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlencode
+
+from curl_cffi import requests
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
 YAD2_SEARCH_URL = "https://www.yad2.co.il/vehicles/cars"
-API_HOST = "gw.yad2.co.il"
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://www.yad2.co.il/",
+}
 
 
 @dataclass
@@ -26,7 +40,12 @@ class Listing:
     brand: Optional[str] = field(default=None)
 
 
-def _build_url_params(cfg: dict) -> dict:
+def build_search_url(cfg: dict) -> str:
+    """Build the Yad2 search URL from config, or return the custom URL if set."""
+    custom = (cfg.get("search_url") or "").strip()
+    if custom:
+        return custom
+
     params = {}
 
     price_min = cfg.get("price_min", 0)
@@ -47,21 +66,156 @@ def _build_url_params(cfg: dict) -> dict:
     if hand_max and hand_max > 0:
         params["hand"] = f"1-{hand_max}"
 
+    qs = urlencode(params)
+    return f"{YAD2_SEARCH_URL}?{qs}" if qs else YAD2_SEARCH_URL
+
+
+# kept as a standalone helper for tests
+def _build_url_params(cfg: dict) -> dict:
+    params = {}
+    price_min = cfg.get("price_min", 0)
+    price_max = cfg.get("price_max", 0)
+    if price_min or price_max:
+        params["price"] = f"{price_min or 0}-{price_max or 999999}"
+    km_max = cfg.get("km_max", 0)
+    if km_max:
+        params["km"] = f"0-{km_max}"
+    year_min = cfg.get("year_min", 0)
+    year_max = cfg.get("year_max", 0)
+    if year_min or year_max:
+        params["year"] = f"{year_min or 1980}-{year_max or 2030}"
+    hand_max = cfg.get("hand_max", 0)
+    if hand_max and hand_max > 0:
+        params["hand"] = f"1-{hand_max}"
     return params
 
 
-def _parse_listing(item: dict) -> Optional[Listing]:
+def _fetch_html(url: str) -> str:
+    resp = requests.get(url, headers=HEADERS, impersonate="chrome124", timeout=20)
+    if "ShieldSquare Captcha" in (resp.text[:2000]):
+        raise RuntimeError("Bot detection triggered (ShieldSquare Captcha)")
+    resp.raise_for_status()
+    return resp.text
+
+
+def _extract_next_data(html: str) -> list[dict]:
+    """Try to pull listing items from the __NEXT_DATA__ JSON Yad2 embeds in the page."""
+    match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+    if not match:
+        return []
     try:
-        lid = str(item.get("id") or item.get("orderId") or item.get("token", ""))
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return []
+
+    # Walk the props tree looking for feed_items / items arrays
+    def find_items(obj, depth=0):
+        if depth > 10:
+            return []
+        if isinstance(obj, list):
+            if obj and isinstance(obj[0], dict) and ("id" in obj[0] or "token" in obj[0]):
+                return obj
+            for v in obj:
+                result = find_items(v, depth + 1)
+                if result:
+                    return result
+        if isinstance(obj, dict):
+            for key in ("feed_items", "feedItems", "items", "listings"):
+                if key in obj and isinstance(obj[key], list):
+                    return obj[key]
+            for v in obj.values():
+                result = find_items(v, depth + 1)
+                if result:
+                    return result
+        return []
+
+    items = find_items(data)
+    logger.info("__NEXT_DATA__ extraction found %d raw items", len(items))
+    return [i for i in items if isinstance(i, dict)]
+
+
+def _extract_from_html(html: str, page_url: str) -> list[dict]:
+    """
+    Fallback: parse visible feed cards from HTML.
+    Uses image src as a stable token (yad2-scraper approach).
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    items = []
+
+    cards = (
+        soup.select("[data-testid='feed-item']")
+        or soup.select(".feed_item")
+        or soup.select("li[class*='feedItem']")
+        or soup.select("li[class*='item']")
+    )
+
+    if not cards:
+        # Last resort: any <a> with /item/ href
+        for a in soup.select("a[href*='/item/']"):
+            token = a["href"].rstrip("/").split("/")[-1]
+            img = a.find("img")
+            items.append({
+                "token": token,
+                "id": token,
+                "image": img["src"] if img and img.get("src") else None,
+            })
+        logger.info("HTML fallback (links): found %d items", len(items))
+        return items
+
+    for card in cards:
+        item: dict = {}
+
+        # ID / token
+        for attr in ("data-id", "data-order-id", "id"):
+            val = card.get(attr, "").strip()
+            if val and not val.startswith("feed"):
+                item["id"] = val
+                break
+        link = card.find("a", href=re.compile(r"/item/"))
+        if link:
+            token = link["href"].rstrip("/").split("/")[-1]
+            item.setdefault("id", token)
+            item["token"] = token
+
+        if not item.get("id"):
+            continue
+
+        title_el = card.find(["h2", "h3"]) or card.find(class_=re.compile("title", re.I))
+        if title_el:
+            item["title"] = title_el.get_text(strip=True)
+
+        price_el = card.find(class_=re.compile("price", re.I))
+        if price_el:
+            item["price"] = re.sub(r"[^\d]", "", price_el.get_text())
+
+        img = card.find("img")
+        if img and img.get("src"):
+            item["image"] = img["src"]
+
+        items.append(item)
+
+    logger.info("HTML fallback (cards): found %d items", len(items))
+    return items
+
+
+def _text(field) -> str:
+    """Extract text from either a plain string or a Yad2 {id, text} dict."""
+    if isinstance(field, dict):
+        return field.get("text", "")
+    return str(field) if field else ""
+
+
+def _parse_listing(item: dict) -> Optional["Listing"]:
+    try:
+        lid = str(item.get("token") or item.get("id") or item.get("orderId", ""))
         if not lid:
             return None
 
-        title_parts = [
-            item.get("manufacturer", ""),
-            item.get("model", ""),
-            item.get("subModel", ""),
-        ]
-        title = " ".join(p for p in title_parts if p).strip() or item.get("title", "")
+        manufacturer = _text(item.get("manufacturer"))
+        model = _text(item.get("model"))
+        sub_model = _text(item.get("subModel"))
+        title_parts = [manufacturer, model, sub_model]
+        title = " ".join(p for p in title_parts if p).strip() or item.get("title", "") or lid
 
         price_raw = item.get("price")
         try:
@@ -75,34 +229,43 @@ def _parse_listing(item: dict) -> Optional[Listing]:
         except (ValueError, AttributeError):
             km = None
 
-        year = item.get("year")
+        # year: flat int or nested in vehicleDates
+        year_raw = item.get("year") or (item.get("vehicleDates") or {}).get("yearOfProduction")
         try:
-            year = int(year) if year else None
+            year = int(year_raw) if year_raw else None
         except (ValueError, TypeError):
             year = None
 
-        hand = item.get("hand")
+        # hand: flat int or {id, text} dict
+        hand_raw = item.get("hand")
         try:
-            hand = int(hand) if hand else None
-        except (ValueError, TypeError):
+            hand = int(hand_raw["id"]) if isinstance(hand_raw, dict) else (int(hand_raw) if hand_raw else None)
+        except (ValueError, TypeError, KeyError):
             hand = None
 
-        city = item.get("city") or item.get("area")
+        # city: flat string or nested address.area.text
+        city = (
+            item.get("city")
+            or item.get("area")
+            or _text((item.get("address") or {}).get("area"))
+        ) or None
 
-        images = item.get("images") or []
-        image_url = None
-        if isinstance(images, list) and images:
-            first = images[0]
-            if isinstance(first, dict):
-                image_url = first.get("src") or first.get("url")
-            elif isinstance(first, str):
-                image_url = first
+        # images: metaData.coverImage / metaData.images[], or legacy fields
+        meta = item.get("metaData") or {}
+        image_url = meta.get("coverImage")
+        if not image_url:
+            meta_images = meta.get("images") or []
+            image_url = meta_images[0] if meta_images else None
+        if not image_url:
+            images = item.get("images") or []
+            if isinstance(images, list) and images:
+                first = images[0]
+                image_url = first.get("src") or first.get("url") if isinstance(first, dict) else first
         if not image_url:
             image_url = item.get("mainImage") or item.get("image")
 
         token = item.get("token") or lid
         listing_url = f"https://www.yad2.co.il/item/{token}"
-        brand = item.get("manufacturer", "")
 
         return Listing(
             listing_id=lid,
@@ -114,136 +277,19 @@ def _parse_listing(item: dict) -> Optional[Listing]:
             city=city,
             image_url=image_url,
             listing_url=listing_url,
-            brand=brand,
+            brand=manufacturer,
         )
     except Exception as e:
         logger.warning("Failed to parse listing: %s", e)
         return None
 
 
-def _matches_brands(listing: Listing, brands: list[str]) -> bool:
+def _matches_brands(listing: "Listing", brands: list[str]) -> bool:
     if not brands:
         return True
     brand = (listing.brand or "").strip()
     title = (listing.title or "").strip()
     return any(b in brand or b in title for b in brands)
-
-
-async def _scrape_with_playwright(cfg: dict) -> list[dict]:
-    """Launch a headless browser, navigate to Yad2, intercept the API response."""
-    from playwright.async_api import async_playwright
-
-    params = _build_url_params(cfg)
-    # Build query string to append to the page URL so Yad2 pre-filters server-side
-    qs = "&".join(f"{k}={v}" for k, v in params.items())
-    page_url = f"{YAD2_SEARCH_URL}?{qs}" if qs else YAD2_SEARCH_URL
-
-    captured: list[dict] = []
-
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ],
-        )
-        context = await browser.new_context(
-            locale="he-IL",
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 800},
-            java_script_enabled=True,
-            extra_http_headers={
-                "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            },
-        )
-        # Hide automation signals
-        await context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-            Object.defineProperty(navigator, 'languages', {get: () => ['he-IL','he','en-US','en']});
-            window.chrome = {runtime: {}};
-        """)
-        page = await context.new_page()
-
-        api_response_future: asyncio.Future = asyncio.get_event_loop().create_future()
-
-        async def handle_response(response):
-            url = response.url
-            ct = response.headers.get("content-type", "")
-            if "json" in ct and API_HOST in url:
-                logger.debug("Intercepted JSON from %s (status %s)", url, response.status)
-            if (API_HOST in url or "yad2.co.il" in url) and "vehicles" in url and response.status == 200:
-                logger.info("Candidate API URL: %s (status %s)", url, response.status)
-                if not api_response_future.done():
-                    try:
-                        body = await response.json()
-                        api_response_future.set_result(body)
-                    except Exception as e:
-                        logger.warning("Could not parse intercepted API response: %s", e)
-
-        page.on("response", handle_response)
-
-        await page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
-        # Give JS time to fire the XHR/fetch after DOM is ready
-        await page.wait_for_timeout(3000)
-
-        # Wait up to 20s for the API call to be intercepted
-        try:
-            data = await asyncio.wait_for(api_response_future, timeout=20)
-            captured = _extract_items(data)
-        except asyncio.TimeoutError:
-            logger.warning("API response not intercepted; falling back to DOM parsing.")
-            captured = await _parse_dom(page)
-
-        await browser.close()
-
-    return captured
-
-
-async def _parse_dom(page) -> list[dict]:
-    """Best-effort DOM scrape when API interception fails."""
-    items = []
-    try:
-        cards = await page.query_selector_all("[data-testid='feed-item'], .feed_item, li[class*='item']")
-        for card in cards:
-            item: dict = {}
-            for attr in ["data-id", "data-order-id", "id"]:
-                val = await card.get_attribute(attr)
-                if val:
-                    item["id"] = val.strip()
-                    break
-            if not item.get("id"):
-                continue
-
-            title_el = await card.query_selector("h2, h3, [class*='title']")
-            if title_el:
-                item["title"] = (await title_el.inner_text()).strip()
-
-            price_el = await card.query_selector("[class*='price']")
-            if price_el:
-                item["price"] = re.sub(r"[^\d]", "", await price_el.inner_text())
-
-            img_el = await card.query_selector("img")
-            if img_el:
-                item["image"] = await img_el.get_attribute("src")
-
-            link_el = await card.query_selector("a[href]")
-            if link_el:
-                href = await link_el.get_attribute("href")
-                if href:
-                    item["token"] = href.split("/")[-1]
-
-            items.append(item)
-    except Exception as e:
-        logger.error("DOM parse failed: %s", e)
-    return items
 
 
 def _extract_items(data: dict) -> list[dict]:
@@ -262,15 +308,23 @@ def _extract_items(data: dict) -> list[dict]:
     return [i for i in items if isinstance(i, dict)]
 
 
-async def scrape(cfg: dict) -> list[Listing]:
-    delay = random.uniform(2, 5)
-    await asyncio.sleep(delay)
+def scrape(cfg: dict) -> list[Listing]:
+    time.sleep(random.uniform(2, 5))
+
+    url = build_search_url(cfg)
+    logger.info("Scraping URL: %s", url)
 
     try:
-        raw_items = await _scrape_with_playwright(cfg)
+        html = _fetch_html(url)
     except Exception as e:
-        logger.error("Playwright scrape failed: %s", e)
+        logger.error("HTTP error scraping Yad2: %s", e)
         return []
+
+    # Try __NEXT_DATA__ first (richest data), fall back to HTML parsing
+    raw_items = _extract_next_data(html)
+    if not raw_items:
+        logger.info("No __NEXT_DATA__ items found, falling back to HTML parsing")
+        raw_items = _extract_from_html(html, url)
 
     brands_filter = cfg.get("brands", [])
     listings = []
