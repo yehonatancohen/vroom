@@ -1,25 +1,15 @@
 import random
-import time
+import asyncio
 import logging
+import json
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-import requests
-
 logger = logging.getLogger(__name__)
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept": "application/json, text/plain, */*",
-    "Referer": "https://www.yad2.co.il/vehicles/cars",
-}
-
-API_URL = "https://gw.yad2.co.il/feed-search-legacy/vehicles/cars"
+YAD2_SEARCH_URL = "https://www.yad2.co.il/vehicles/cars"
+API_HOST = "gw.yad2.co.il"
 
 
 @dataclass
@@ -36,24 +26,22 @@ class Listing:
     brand: Optional[str] = field(default=None)
 
 
-def _build_params(cfg: dict) -> dict:
-    params = {
-        "carFamilyType": "1",   # private cars
-        "priceOnly": "1",
-    }
+def _build_url_params(cfg: dict) -> dict:
+    params = {}
 
-    if cfg.get("price_min", 0) > 0:
-        params["price"] = f"{cfg['price_min']}-{cfg['price_max']}"
-    elif cfg.get("price_max", 0) > 0:
-        params["price"] = f"0-{cfg['price_max']}"
+    price_min = cfg.get("price_min", 0)
+    price_max = cfg.get("price_max", 0)
+    if price_min or price_max:
+        params["price"] = f"{price_min or 0}-{price_max or 999999}"
 
-    if cfg.get("km_max", 0) > 0:
-        params["km"] = f"0-{cfg['km_max']}"
+    km_max = cfg.get("km_max", 0)
+    if km_max:
+        params["km"] = f"0-{km_max}"
 
     year_min = cfg.get("year_min", 0)
     year_max = cfg.get("year_max", 0)
     if year_min or year_max:
-        params["year"] = f"{year_min or 1980}-{year_max or 2025}"
+        params["year"] = f"{year_min or 1980}-{year_max or 2030}"
 
     hand_max = cfg.get("hand_max", 0)
     if hand_max and hand_max > 0:
@@ -64,7 +52,7 @@ def _build_params(cfg: dict) -> dict:
 
 def _parse_listing(item: dict) -> Optional[Listing]:
     try:
-        lid = str(item.get("id") or item.get("orderId", ""))
+        lid = str(item.get("id") or item.get("orderId") or item.get("token", ""))
         if not lid:
             return None
 
@@ -101,7 +89,6 @@ def _parse_listing(item: dict) -> Optional[Listing]:
 
         city = item.get("city") or item.get("area")
 
-        # Image URL: try multiple paths in the response
         images = item.get("images") or []
         image_url = None
         if isinstance(images, list) and images:
@@ -115,7 +102,6 @@ def _parse_listing(item: dict) -> Optional[Listing]:
 
         token = item.get("token") or lid
         listing_url = f"https://www.yad2.co.il/item/{token}"
-
         brand = item.get("manufacturer", "")
 
         return Listing(
@@ -131,7 +117,7 @@ def _parse_listing(item: dict) -> Optional[Listing]:
             brand=brand,
         )
     except Exception as e:
-        logger.warning("Failed to parse listing: %s | item: %s", e, item)
+        logger.warning("Failed to parse listing: %s", e)
         return None
 
 
@@ -140,59 +126,134 @@ def _matches_brands(listing: Listing, brands: list[str]) -> bool:
         return True
     brand = (listing.brand or "").strip()
     title = (listing.title or "").strip()
-    for b in brands:
-        if b in brand or b in title:
-            return True
-    return False
+    return any(b in brand or b in title for b in brands)
 
 
-def scrape(cfg: dict) -> list[Listing]:
-    params = _build_params(cfg)
-    delay = random.uniform(2, 5)
-    time.sleep(delay)
+async def _scrape_with_playwright(cfg: dict) -> list[dict]:
+    """Launch a headless browser, navigate to Yad2, intercept the API response."""
+    from playwright.async_api import async_playwright
 
+    params = _build_url_params(cfg)
+    # Build query string to append to the page URL so Yad2 pre-filters server-side
+    qs = "&".join(f"{k}={v}" for k, v in params.items())
+    page_url = f"{YAD2_SEARCH_URL}?{qs}" if qs else YAD2_SEARCH_URL
+
+    captured: list[dict] = []
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        context = await browser.new_context(
+            locale="he-IL",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+        )
+        page = await context.new_page()
+
+        api_response_future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+        async def handle_response(response):
+            if API_HOST in response.url and "vehicles/cars" in response.url:
+                if not api_response_future.done():
+                    try:
+                        body = await response.json()
+                        api_response_future.set_result(body)
+                    except Exception as e:
+                        logger.warning("Could not parse intercepted API response: %s", e)
+
+        page.on("response", handle_response)
+
+        await page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+
+        # Wait up to 15s for the API call to be intercepted
+        try:
+            data = await asyncio.wait_for(api_response_future, timeout=15)
+            captured = _extract_items(data)
+        except asyncio.TimeoutError:
+            logger.warning("API response not intercepted; falling back to DOM parsing.")
+            captured = await _parse_dom(page)
+
+        await browser.close()
+
+    return captured
+
+
+async def _parse_dom(page) -> list[dict]:
+    """Best-effort DOM scrape when API interception fails."""
+    items = []
     try:
-        resp = requests.get(API_URL, headers=HEADERS, params=params, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.HTTPError as e:
-        logger.error("HTTP error scraping Yad2: %s", e)
-        return []
-    except Exception as e:
-        logger.error("Error scraping Yad2: %s", e)
-        return []
+        cards = await page.query_selector_all("[data-testid='feed-item'], .feed_item, li[class*='item']")
+        for card in cards:
+            item: dict = {}
+            for attr in ["data-id", "data-order-id", "id"]:
+                val = await card.get_attribute(attr)
+                if val:
+                    item["id"] = val.strip()
+                    break
+            if not item.get("id"):
+                continue
 
-    # Navigate feed response structure
-    feed = data.get("data", {})
+            title_el = await card.query_selector("h2, h3, [class*='title']")
+            if title_el:
+                item["title"] = (await title_el.inner_text()).strip()
+
+            price_el = await card.query_selector("[class*='price']")
+            if price_el:
+                item["price"] = re.sub(r"[^\d]", "", await price_el.inner_text())
+
+            img_el = await card.query_selector("img")
+            if img_el:
+                item["image"] = await img_el.get_attribute("src")
+
+            link_el = await card.query_selector("a[href]")
+            if link_el:
+                href = await link_el.get_attribute("href")
+                if href:
+                    item["token"] = href.split("/")[-1]
+
+            items.append(item)
+    except Exception as e:
+        logger.error("DOM parse failed: %s", e)
+    return items
+
+
+def _extract_items(data: dict) -> list[dict]:
+    feed = data.get("data", data)
     if isinstance(feed, dict):
-        items = feed.get("feed", {}).get("feed_items", [])
+        items = (
+            feed.get("feed", {}).get("feed_items")
+            or feed.get("feed_items")
+            or feed.get("items")
+            or []
+        )
     elif isinstance(feed, list):
         items = feed
     else:
         items = []
+    return [i for i in items if isinstance(i, dict)]
 
-    if not items:
-        # Try alternate path
-        items = data.get("feed_items") or data.get("items") or []
 
-    listings = []
+def scrape(cfg: dict) -> list[Listing]:
+    delay = random.uniform(2, 5)
+    import time; time.sleep(delay)
+
+    try:
+        raw_items = asyncio.run(_scrape_with_playwright(cfg))
+    except Exception as e:
+        logger.error("Playwright scrape failed: %s", e)
+        return []
+
     brands_filter = cfg.get("brands", [])
+    listings = []
 
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        # Skip ad/banner items
+    for item in raw_items:
         if item.get("type") in ("ad", "banner", "yad1"):
             continue
-
         listing = _parse_listing(item)
-        if listing is None:
-            continue
-
-        if not _matches_brands(listing, brands_filter):
-            continue
-
-        listings.append(listing)
+        if listing and _matches_brands(listing, brands_filter):
+            listings.append(listing)
 
     logger.info("Scraped %d matching listings", len(listings))
     return listings

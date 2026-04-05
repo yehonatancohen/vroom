@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl:*)",
+      "WebFetch(domain:www.yad2.co.il)",
+      "Bash(grep -oE '\\(gw\\\\.yad2|feed.search|feed-search|apiUrl|baseUrl|gatewayUrl\\)[^\"\"\"\"'\"''''\"'`\\\\\\\\]{0,150}')",
+      "Bash(grep -oE 'feed-search-vehicles[^\"\"\"\"'\"''''\"'`\\\\\\\\]{0,100}')",
+      "Bash(grep -oE '.{0,50}\\(gw\\\\.yad2\\\\.co\\\\.il|gw\\\\.yad2\\\\.io\\)[^\"\"\"\"'\"''''\"'`\\\\\\\\]{0,100}')",
+      "Bash(grep -oE '.{0,200}feed-search-vehicles[^\"\"\"\"'\"''''\"'`\\\\\\\\]{0,200}')",
+      "Bash(grep -oE '.{0,50}feed-search-vehicles[^,}]{0,200}')",
+      "Bash(grep -oE '.{0,30}60313.{0,60}')",
+      "Bash(grep -oE '[,{]60313:\"\"\"\"[0-9a-f]+\"\"\"\"')",
+      "Bash(grep -oE 'static.chunks.[^\"\"\"\"'\"''''\"'`+]{0,50}' /tmp/yad2_app.js)",
+      "Bash(grep -oE '.{0,50}vehicles[^\"\"\"\"'\"''''\"'`]{0,50}gw[^\"\"\"\"'\"''''\"'`]{0,100}' /tmp/yad2_app.js)",
+      "Bash(grep -oE '0,rV\\\\.m\\\\\\)\\\\\\([^\\)]{0,80}\\\\\\)' /tmp/yad2_app.js)"
+    ]
+  }
+}
