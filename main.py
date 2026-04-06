@@ -59,13 +59,20 @@ async def _deny(update: Update):
 # Scan logic
 # ---------------------------------------------------------------------------
 
-async def run_scan(app: Application):
+async def run_scan(app: Application, manual: bool = False):
     global _next_scan_time
     cfg = db.get_config()
-    logger.info("Running scan with config: %s", cfg)
+    logger.info("Running scan with config: %s (manual=%s)", cfg, manual)
 
-    since = db.get_last_scan_time()
+    last_scan = db.get_last_scan_time()
     scan_started_at = datetime.now()
+
+    if manual:
+        # Show everything from the past week, regardless of last scan time
+        one_week_ago = scan_started_at - timedelta(weeks=1)
+        since = min(last_scan, one_week_ago) if last_scan else one_week_ago
+    else:
+        since = last_scan
 
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, scraper.scrape, cfg, since)
@@ -204,7 +211,7 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return await _deny(update)
     await update.message.reply_text("🔍 מתחיל סריקה...")
-    await run_scan(context.application)
+    await run_scan(context.application, manual=True)
 
 
 async def cmd_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
