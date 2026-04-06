@@ -68,17 +68,10 @@ async def run_scan(app: Application):
     scan_started_at = datetime.now()
 
     loop = asyncio.get_event_loop()
-    listings = await loop.run_in_executor(None, scraper.scrape, cfg, since)
+    result = await loop.run_in_executor(None, scraper.scrape, cfg, since)
     db.set_last_scan_time(scan_started_at)
 
-    if not listings:
-        logger.info("Scan returned 0 results.")
-        try:
-            await app.bot.send_message(chat_id=TELEGRAM_USER_ID, text="🔍 הסריקה הושלמה — לא נמצאו מודעות חדשות.")
-        except Exception as e:
-            logger.warning("Failed to send no-results notification: %s", e)
-        _schedule_next(app, cfg.get("scan_interval", 30))
-        return
+    listings = result.listings
 
     # Filter unseen
     all_ids = [l.listing_id for l in listings]
@@ -86,13 +79,34 @@ async def run_scan(app: Application):
     new_listings = [l for l in listings if l.listing_id in new_ids]
 
     if not new_listings:
-        logger.info("No new listings.")
+        logger.info("Scan returned 0 new listings (total_on_page=%d, brand_match=%d, skipped_since=%d).",
+                    result.total_on_page, result.filtered_by_brand, result.filtered_by_since)
+        if result.total_on_page == 0:
+            msg = "🔍 הסריקה הושלמה — לא נמצאו מודעות בדף החיפוש."
+        elif result.filtered_by_since > 0 and result.filtered_by_brand == 0:
+            msg = f"🔍 הסריקה הושלמה — נמצאו {result.total_on_page} מודעות, אך אף אחת לא תואמת את הפילטרים שלך."
+        elif result.filtered_by_since > 0:
+            msg = f"🔍 הסריקה הושלמה — {result.filtered_by_since} מודעות חדשות נמצאו אך הן מלפני הסריקה האחרונה."
+        elif not listings and result.filtered_by_brand < result.total_on_page:
+            msg = f"🔍 הסריקה הושלמה — נמצאו {result.total_on_page} מודעות, אך אף אחת לא תואמת את הפילטרים שלך."
+        else:
+            msg = "🔍 הסריקה הושלמה — לא נמצאו מודעות חדשות."
+        try:
+            await app.bot.send_message(chat_id=TELEGRAM_USER_ID, text=msg)
+        except Exception as e:
+            logger.warning("Failed to send no-results notification: %s", e)
         _schedule_next(app, cfg.get("scan_interval", 30))
         return
 
     max_results = cfg.get("max_results", 5)
     if max_results > 0:
         new_listings = new_listings[:max_results]
+
+    summary = f"🔍 נמצאו {len(new_listings)} מודעות חדשות התואמות לחיפוש שלך:"
+    try:
+        await app.bot.send_message(chat_id=TELEGRAM_USER_ID, text=summary)
+    except Exception as e:
+        logger.warning("Failed to send summary message: %s", e)
 
     for listing in new_listings:
         text = formatter.format_listing(listing)

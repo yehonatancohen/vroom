@@ -360,10 +360,19 @@ def _extract_items(data: dict) -> list[dict]:
     return [i for i in items if isinstance(i, dict)]
 
 
-def scrape(cfg: dict, since: Optional[datetime] = None) -> list[Listing]:
+@dataclass
+class ScrapeResult:
+    listings: list  # list[Listing] matching all filters
+    total_on_page: int  # raw items found (excluding ads/banners)
+    filtered_by_brand: int  # items that passed brand filter
+    filtered_by_since: int  # items skipped because listed_at <= since
+
+
+def scrape(cfg: dict, since: Optional[datetime] = None) -> ScrapeResult:
     """
     Fetch search results and enrich each new listing with detail-page data.
     `since`: if set, only return listings created after this datetime.
+    Returns a ScrapeResult with counts for reporting.
     """
     time.sleep(random.uniform(2, 5))
 
@@ -374,7 +383,7 @@ def scrape(cfg: dict, since: Optional[datetime] = None) -> list[Listing]:
         html = _fetch_html(url)
     except Exception as e:
         logger.error("HTTP error scraping Yad2: %s", e)
-        return []
+        return ScrapeResult(listings=[], total_on_page=0, filtered_by_brand=0, filtered_by_since=0)
 
     raw_items = _extract_next_data(html)
     if not raw_items:
@@ -383,15 +392,22 @@ def scrape(cfg: dict, since: Optional[datetime] = None) -> list[Listing]:
 
     brands_filter = cfg.get("brands", [])
     listings = []
+    total_on_page = 0
+    filtered_by_brand = 0
+    filtered_by_since = 0
 
     for item in raw_items:
         if item.get("type") in ("ad", "banner", "yad1"):
             continue
 
+        total_on_page += 1
+
         # Quick brand pre-filter using search-result data before fetching detail
         pre = _parse_listing(item)
         if not pre or not _matches_brands(pre, brands_filter):
             continue
+
+        filtered_by_brand += 1
 
         # Fetch detail page for km, color, test date, listed_at
         token = item.get("token") or pre.listing_id
@@ -402,9 +418,16 @@ def scrape(cfg: dict, since: Optional[datetime] = None) -> list[Listing]:
 
         if since and listing.listed_at and listing.listed_at <= since:
             logger.debug("Skipping %s listed at %s (before since=%s)", token, listing.listed_at, since)
+            filtered_by_since += 1
             continue
 
         listings.append(listing)
 
-    logger.info("Scraped %d matching listings", len(listings))
-    return listings
+    logger.info("Scraped %d matching listings (total_on_page=%d, brand_match=%d, skipped_since=%d)",
+                len(listings), total_on_page, filtered_by_brand, filtered_by_since)
+    return ScrapeResult(
+        listings=listings,
+        total_on_page=total_on_page,
+        filtered_by_brand=filtered_by_brand,
+        filtered_by_since=filtered_by_since,
+    )

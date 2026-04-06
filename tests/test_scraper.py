@@ -14,6 +14,7 @@ from scraper import (
     build_search_url,
     scrape,
     Listing,
+    ScrapeResult,
 )
 
 
@@ -285,22 +286,26 @@ def test_scrape_filters_ads_and_brands():
          patch("scraper.fetch_listing_detail", return_value=detail), \
          patch("scraper.time") as mock_time:
         mock_time.sleep = MagicMock()
-        listings = scrape(CFG)
+        result = scrape(CFG)
 
-    assert len(listings) == 1
-    assert listings[0].brand == "טויוטה"
-    assert listings[0].km == 120000
-    assert listings[0].color == "לבן"
-    assert listings[0].test_date == "09/2026"
+    assert isinstance(result, ScrapeResult)
+    assert len(result.listings) == 1
+    assert result.listings[0].brand == "טויוטה"
+    assert result.listings[0].km == 120000
+    assert result.listings[0].color == "לבן"
+    assert result.listings[0].test_date == "09/2026"
+    assert result.total_on_page == 2  # abc123 (toyota) + xyz (honda); ad excluded
+    assert result.filtered_by_brand == 1
 
 
 def test_scrape_returns_empty_on_http_error():
     with patch("scraper._fetch_html", side_effect=Exception("connection error")), \
          patch("scraper.time") as mock_time:
         mock_time.sleep = MagicMock()
-        listings = scrape(CFG)
+        result = scrape(CFG)
 
-    assert listings == []
+    assert result.listings == []
+    assert result.total_on_page == 0
 
 
 def test_scrape_since_filters_old_listings():
@@ -312,9 +317,10 @@ def test_scrape_since_filters_old_listings():
          patch("scraper.fetch_listing_detail", return_value=old_detail), \
          patch("scraper.time") as mock_time:
         mock_time.sleep = MagicMock()
-        listings = scrape(CFG, since=since)
+        result = scrape(CFG, since=since)
 
-    assert listings == []
+    assert result.listings == []
+    assert result.filtered_by_since == 1
 
 
 def test_scrape_since_includes_new_listings():
@@ -326,6 +332,7 @@ def test_scrape_since_includes_new_listings():
          patch("scraper.fetch_listing_detail", return_value=new_detail), \
          patch("scraper.time") as mock_time:
         mock_time.sleep = MagicMock()
-        listings = scrape(CFG, since=since)
+        result = scrape(CFG, since=since)
 
-    assert len(listings) == 1
+    assert len(result.listings) == 1
+    assert result.filtered_by_since == 0
