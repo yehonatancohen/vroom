@@ -90,10 +90,8 @@ async def run_scan(app: Application, manual: bool = False):
                     result.total_on_page, result.filtered_by_brand, result.filtered_by_since)
         if result.total_on_page == 0:
             msg = "🔍 הסריקה הושלמה — לא נמצאו מודעות בדף החיפוש."
-        elif result.filtered_by_since > 0 and result.filtered_by_brand == 0:
+        elif result.filtered_by_brand == 0 and result.total_on_page > 0:
             msg = f"🔍 הסריקה הושלמה — נמצאו {result.total_on_page} מודעות, אך אף אחת לא תואמת את הפילטרים שלך."
-        elif result.filtered_by_since > 0:
-            msg = f"🔍 הסריקה הושלמה — {result.filtered_by_since} מודעות חדשות נמצאו אך הן מלפני הסריקה האחרונה."
         elif not listings and result.filtered_by_brand < result.total_on_page:
             msg = f"🔍 הסריקה הושלמה — נמצאו {result.total_on_page} מודעות, אך אף אחת לא תואמת את הפילטרים שלך."
         else:
