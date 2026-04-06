@@ -8,7 +8,7 @@ TELEGRAM_USER_ID = int(os.getenv("TELEGRAM_USER_ID", "0"))
 
 DB_PATH = os.getenv("DB_PATH", "yad2bot.db")
 
-FB_LOCATION_ID = os.getenv("FB_LOCATION_ID", "109097929135922")  # Israel national
+FB_LOCATION_ID = os.getenv("FB_LOCATION_ID", "")  # set to override; empty = use IP geolocation
 
 DEFAULT_CONFIG = {
     "brands": [],           # empty = all brands

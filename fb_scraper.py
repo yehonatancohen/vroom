@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 
 from scraper import Listing, ScrapeResult
 import db
-from config import FB_LOCATION_ID
+from config import FB_LOCATION_ID  # optional override; empty = rely on IP geolocation
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,12 @@ _USER_AGENT = (
 
 
 def build_fb_url(cfg: dict) -> str:
-    """Build the FB Marketplace search URL from config."""
+    """Build the FB Marketplace vehicles search URL.
+
+    Location: if FB_LOCATION_ID env var is set, embed it in the path for an
+    explicit location scope. Otherwise omit it and let Facebook use the
+    browser's IP geolocation (correct when the bot runs in Israel).
+    """
     params = {}
     if cfg.get("price_min"):
         params["minPrice"] = cfg["price_min"]
@@ -36,7 +41,11 @@ def build_fb_url(cfg: dict) -> str:
     if cfg.get("km_max"):
         params["maxMileage"] = cfg["km_max"]
 
-    base = f"{FB_MARKETPLACE_BASE}/{FB_LOCATION_ID}/vehicles"
+    if FB_LOCATION_ID:
+        base = f"{FB_MARKETPLACE_BASE}/{FB_LOCATION_ID}/vehicles"
+    else:
+        base = f"{FB_MARKETPLACE_BASE}/vehicles"
+
     if params:
         return f"{base}?{urlencode(params)}"
     return base
@@ -185,24 +194,35 @@ async def scrape_fb(cfg: dict, since: Optional[datetime] = None) -> ScrapeResult
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                ],
             )
             ctx = await browser.new_context(
                 user_agent=_USER_AGENT,
                 viewport={"width": 1280, "height": 900},
                 locale="he-IL",
+                timezone_id="Asia/Jerusalem",
+                geolocation={"latitude": 32.0853, "longitude": 34.7818},  # Tel Aviv
+                permissions=["geolocation"],
             )
             page = await ctx.new_page()
+            # Mask the navigator.webdriver property that reveals headless automation
+            await page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
 
             try:
-                await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                await page.goto(url, timeout=45000, wait_until="networkidle")
             except Exception as e:
                 logger.warning("FB: page navigation failed: %s", e)
                 await browser.close()
                 return ScrapeResult([], 0, 0, 0)
 
             await _dismiss_modal(page)
-            await asyncio.sleep(random.uniform(1.0, 2.0))
+            await asyncio.sleep(random.uniform(1.5, 3.0))
 
             raw_cards = await _extract_cards(page)
             total_on_page = len(raw_cards)
@@ -222,8 +242,18 @@ async def scrape_fb(cfg: dict, since: Optional[datetime] = None) -> ScrapeResult
 
             listings = []
             skipped_since = 0
+            filtered_by_brand = 0
+
+            brands_filter = cfg.get("brands", [])
 
             for card in unseen_cards:
+                title = card.get("title") or ""
+                # Simple brand filter based on title
+                if brands_filter:
+                    if not any(brand in title for brand in brands_filter):
+                        filtered_by_brand += 1
+                        continue
+
                 raw_id = card["listing_id"][3:]  # strip "fb_" for URL
                 detail = await _extract_detail(page, raw_id)
 
@@ -253,7 +283,7 @@ async def scrape_fb(cfg: dict, since: Optional[datetime] = None) -> ScrapeResult
             return ScrapeResult(
                 listings=listings,
                 total_on_page=total_on_page,
-                filtered_by_brand=0,
+                filtered_by_brand=filtered_by_brand,
                 filtered_by_since=skipped_since,
             )
 
