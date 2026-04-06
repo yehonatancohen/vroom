@@ -20,7 +20,6 @@ import db
 import scraper
 import formatter
 import fb_scraper
-from fb_scraper import FBSessionNotConfigured
 from scraper import ScrapeResult
 from config import (
     BOT_TOKEN,
@@ -93,11 +92,7 @@ async def run_scan(app: Application, manual: bool = False):
 
     # FB result handling
     fb_active = True
-    if isinstance(fb_result, FBSessionNotConfigured):
-        logger.info("FB Marketplace not configured, skipping: %s", fb_result)
-        fb_active = False
-        fb_result = ScrapeResult([], 0, 0, 0)
-    elif isinstance(fb_result, Exception):
+    if isinstance(fb_result, Exception):
         logger.warning("FB Marketplace scraper failed: %s", fb_result)
         fb_active = False
         fb_result = ScrapeResult([], 0, 0, 0)
