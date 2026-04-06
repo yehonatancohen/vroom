@@ -8,6 +8,9 @@ TELEGRAM_USER_ID = int(os.getenv("TELEGRAM_USER_ID", "0"))
 
 DB_PATH = os.getenv("DB_PATH", "yad2bot.db")
 
+FB_PROFILE_DIR = os.getenv("FB_PROFILE_DIR", "fb_profile")
+FB_LOCATION_ID = os.getenv("FB_LOCATION_ID", "109097929135922")  # Israel national
+
 DEFAULT_CONFIG = {
     "brands": [],           # empty = all brands
     "price_min": 0,

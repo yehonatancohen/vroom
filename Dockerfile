@@ -8,10 +8,15 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN playwright install chromium
+RUN playwright install-deps chromium
 
 COPY . .
 
 VOLUME ["/app/data"]
+VOLUME ["/app/fb_profile"]
+
 ENV DB_PATH=/app/data/yad2bot.db
+ENV FB_PROFILE_DIR=/app/fb_profile
 
 CMD ["python", "main.py"]

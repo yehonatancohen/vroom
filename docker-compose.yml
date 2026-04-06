@@ -7,8 +7,11 @@ services:
       - .env
     environment:
       - DB_PATH=/app/data/yad2bot.db
+      - FB_PROFILE_DIR=/app/fb_profile
     volumes:
       - yad2bot_data:/app/data
+      - yad2bot_fb_profile:/app/fb_profile
 
 volumes:
   yad2bot_data:
+  yad2bot_fb_profile:

@@ -19,6 +19,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import db
 import scraper
 import formatter
+import fb_scraper
+from fb_scraper import FBSessionNotConfigured
+from scraper import ScrapeResult
 from config import (
     BOT_TOKEN,
     TELEGRAM_USER_ID,
@@ -75,25 +78,53 @@ async def run_scan(app: Application, manual: bool = False):
         since = last_scan
 
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, scraper.scrape, cfg, since)
+
+    yad2_task = loop.run_in_executor(None, scraper.scrape, cfg, since)
+    fb_task = fb_scraper.scrape_fb(cfg, since)
+
+    yad2_result, fb_result = await asyncio.gather(
+        yad2_task, fb_task, return_exceptions=True
+    )
+
+    # Yad2 result handling
+    if isinstance(yad2_result, Exception):
+        logger.error("Yad2 scraper failed: %s", yad2_result)
+        yad2_result = ScrapeResult([], 0, 0, 0)
+
+    # FB result handling
+    fb_active = True
+    if isinstance(fb_result, FBSessionNotConfigured):
+        logger.info("FB Marketplace not configured, skipping: %s", fb_result)
+        fb_active = False
+        fb_result = ScrapeResult([], 0, 0, 0)
+    elif isinstance(fb_result, Exception):
+        logger.warning("FB Marketplace scraper failed: %s", fb_result)
+        fb_active = False
+        fb_result = ScrapeResult([], 0, 0, 0)
+
     db.set_last_scan_time(scan_started_at)
 
-    listings = result.listings
+    listings = yad2_result.listings + fb_result.listings
+    total_on_page = yad2_result.total_on_page + fb_result.total_on_page
 
-    # Filter unseen
+    # Filter unseen (fb_ prefix already applied by fb_scraper)
     all_ids = [l.listing_id for l in listings]
     new_ids = set(db.filter_new(all_ids))
     new_listings = [l for l in listings if l.listing_id in new_ids]
 
     if not new_listings:
-        logger.info("Scan returned 0 new listings (total_on_page=%d, brand_match=%d, skipped_since=%d).",
-                    result.total_on_page, result.filtered_by_brand, result.filtered_by_since)
-        if result.total_on_page == 0:
+        logger.info(
+            "Scan returned 0 new listings (total_on_page=%d, yad2_brand_match=%d, "
+            "yad2_skipped_since=%d, fb_active=%s).",
+            total_on_page, yad2_result.filtered_by_brand,
+            yad2_result.filtered_by_since, fb_active,
+        )
+        if total_on_page == 0:
             msg = "🔍 הסריקה הושלמה — לא נמצאו מודעות בדף החיפוש."
-        elif result.filtered_by_brand == 0 and result.total_on_page > 0:
-            msg = f"🔍 הסריקה הושלמה — נמצאו {result.total_on_page} מודעות, אך אף אחת לא תואמת את הפילטרים שלך."
-        elif not listings and result.filtered_by_brand < result.total_on_page:
-            msg = f"🔍 הסריקה הושלמה — נמצאו {result.total_on_page} מודעות, אך אף אחת לא תואמת את הפילטרים שלך."
+        elif yad2_result.filtered_by_brand == 0 and total_on_page > 0:
+            msg = f"🔍 הסריקה הושלמה — נמצאו {total_on_page} מודעות, אך אף אחת לא תואמת את הפילטרים שלך."
+        elif not listings and yad2_result.filtered_by_brand < total_on_page:
+            msg = f"🔍 הסריקה הושלמה — נמצאו {total_on_page} מודעות, אך אף אחת לא תואמת את הפילטרים שלך."
         else:
             msg = "🔍 הסריקה הושלמה — לא נמצאו מודעות חדשות."
         try:
@@ -107,7 +138,12 @@ async def run_scan(app: Application, manual: bool = False):
     if max_results > 0:
         new_listings = new_listings[:max_results]
 
-    summary = f"🔍 נמצאו {len(new_listings)} מודעות חדשות התואמות לחיפוש שלך:"
+    yad2_count = sum(1 for l in new_listings if not l.listing_id.startswith("fb_"))
+    fb_count = sum(1 for l in new_listings if l.listing_id.startswith("fb_"))
+    parts = [f"יד2: {yad2_count}"]
+    if fb_active:
+        parts.append(f"פייסבוק: {fb_count}")
+    summary = f"🔍 נמצאו {len(new_listings)} מודעות חדשות: " + " | ".join(parts)
     try:
         await app.bot.send_message(chat_id=TELEGRAM_USER_ID, text=summary)
     except Exception as e:
