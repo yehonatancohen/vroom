@@ -42,6 +42,7 @@ class Listing:
     color: Optional[str] = field(default=None)
     test_date: Optional[str] = field(default=None)   # "MM/YYYY"
     listed_at: Optional[datetime] = field(default=None)
+    license_plate: Optional[str] = field(default=None)
 
 
 def build_search_url(cfg: dict) -> str:
@@ -313,6 +314,21 @@ def _parse_listing(item: dict, detail: Optional[dict] = None) -> Optional["Listi
         dates = src.get("dates") or {}
         listed_at = _parse_dt(dates.get("createdAt"))
 
+        # Try several field names Yad2 uses for the license plate
+        plate_raw = (
+            src.get("licenseNumber")
+            or src.get("license_number")
+            or src.get("licensePlate")
+            or src.get("vehicleNumber")
+            or item.get("licenseNumber")
+            or item.get("license_number")
+        )
+        license_plate = str(plate_raw).strip() if plate_raw else None
+        if license_plate:
+            logger.debug("Found license plate: %s for listing %s", license_plate, lid)
+        else:
+            logger.debug("No license plate found for listing %s (keys: %s)", lid, list(src.keys()))
+
         token = src.get("token") or item.get("token") or lid
         listing_url = f"https://www.yad2.co.il/item/{token}"
 
@@ -330,6 +346,7 @@ def _parse_listing(item: dict, detail: Optional[dict] = None) -> Optional["Listi
             color=color,
             test_date=test_date,
             listed_at=listed_at,
+            license_plate=license_plate,
         )
     except Exception as e:
         logger.warning("Failed to parse listing: %s", e)
@@ -373,6 +390,7 @@ class ScrapeResult:
     total_on_page: int  # raw items found (excluding ads/banners)
     filtered_by_brand: int  # items that passed brand filter
     filtered_by_since: int  # items skipped because listed_at <= since
+    filtered_by_model: int = 0  # items that passed brand but failed model filter
 
 
 def scrape(cfg: dict, since: Optional[datetime] = None) -> ScrapeResult:
@@ -402,6 +420,7 @@ def scrape(cfg: dict, since: Optional[datetime] = None) -> ScrapeResult:
     listings = []
     total_on_page = 0
     filtered_by_brand = 0
+    filtered_by_model = 0
     filtered_by_since = 0
 
     for item in raw_items:
@@ -412,12 +431,18 @@ def scrape(cfg: dict, since: Optional[datetime] = None) -> ScrapeResult:
 
         # Quick brand+model pre-filter using search-result data before fetching detail
         pre = _parse_listing(item)
-        if not pre or not _matches_brands(pre, brands_filter):
+        if not pre:
             continue
-        if not _matches_model_filter(pre, model_filter):
+        if not _matches_brands(pre, brands_filter):
+            logger.debug("Brand filter drop: '%s' (brand=%r)", pre.title, pre.brand)
             continue
 
         filtered_by_brand += 1
+
+        if not _matches_model_filter(pre, model_filter):
+            logger.info("Model filter drop: '%s'", pre.title)
+            filtered_by_model += 1
+            continue
 
         # Fetch detail page for km, color, test date, listed_at
         token = item.get("token") or pre.listing_id
@@ -433,11 +458,15 @@ def scrape(cfg: dict, since: Optional[datetime] = None) -> ScrapeResult:
 
         listings.append(listing)
 
-    logger.info("Scraped %d matching listings (total_on_page=%d, brand_match=%d, skipped_since=%d)",
-                len(listings), total_on_page, filtered_by_brand, filtered_by_since)
+    logger.info(
+        "Scraped %d matching listings (total_on_page=%d, brand_match=%d, "
+        "model_drop=%d, skipped_since=%d)",
+        len(listings), total_on_page, filtered_by_brand, filtered_by_model, filtered_by_since,
+    )
     return ScrapeResult(
         listings=listings,
         total_on_page=total_on_page,
         filtered_by_brand=filtered_by_brand,
         filtered_by_since=filtered_by_since,
+        filtered_by_model=filtered_by_model,
     )

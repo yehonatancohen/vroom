@@ -20,6 +20,8 @@ import db
 import scraper
 import formatter
 import fb_scraper
+import plate_lookup
+import ocr_plate
 from scraper import ScrapeResult
 from config import (
     BOT_TOKEN,
@@ -175,6 +177,33 @@ async def run_scan(app: Application, manual: bool = False, since_override: datet
                 )
             except Exception as e2:
                 logger.error("Fallback send also failed: %s", e2)
+
+        # Resolve license plate: use Yad2 data if available, else try OCR on the image
+        resolved_plate = listing.license_plate
+        if not resolved_plate and listing.image_url:
+            try:
+                resolved_plate = await loop.run_in_executor(
+                    None, ocr_plate.ocr_plate_from_url, listing.image_url
+                )
+                if resolved_plate:
+                    logger.info("OCR found plate %s for listing %s", resolved_plate, listing.listing_id)
+            except Exception as e:
+                logger.warning("OCR failed for listing %s: %s", listing.listing_id, e)
+
+        # Gov.il lookup with whatever plate we have
+        if resolved_plate:
+            try:
+                info = await loop.run_in_executor(
+                    None, plate_lookup.lookup_plate, resolved_plate
+                )
+                plate_text = formatter.format_plate_info(resolved_plate, info)
+                await app.bot.send_message(
+                    chat_id=TELEGRAM_USER_ID,
+                    text=plate_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception as e:
+                logger.warning("Plate lookup failed for %s: %s", resolved_plate, e)
 
     db.mark_seen([l.listing_id for l in new_listings])
     logger.info("Sent %d new listings.", len(new_listings))

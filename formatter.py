@@ -1,4 +1,5 @@
 from scraper import Listing
+from typing import Optional
 
 
 def format_listing(listing: Listing) -> str:
@@ -33,6 +34,41 @@ def format_listing(listing: Listing) -> str:
         lines.append(f"🕐 פורסם: {listing.listed_at.strftime('%d/%m/%Y %H:%M')}")
 
     lines.append(f"\n🔗 [לצפייה במודעה]({listing.listing_url})")
+
+    return "\n".join(lines)
+
+
+def format_plate_info(plate: str, info: Optional[dict]) -> str:
+    if not info:
+        return f"🔍 לוחית רישוי `{plate}` — לא נמצא מידע במאגר הממשלתי."
+
+    lines = [f"🔍 *מידע רכב — {plate}*"]
+
+    manufacturer = info.get("manufacturer", "")
+    model = info.get("model", "")
+    trim = info.get("trim", "")
+    car_name = " ".join(p for p in [manufacturer, model, trim] if p)
+    if car_name:
+        lines.append(f"🚗 {car_name}")
+
+    if info.get("year"):
+        lines.append(f"📅 שנת ייצור: {info['year']}")
+    if info.get("color"):
+        lines.append(f"🎨 צבע: {info['color']}")
+    if info.get("fuel"):
+        lines.append(f"⛽ סוג דלק: {info['fuel']}")
+    if info.get("engine_cc"):
+        lines.append(f"🔧 נפח מנוע: {info['engine_cc']} סמ\"ק")
+    if info.get("owner_count"):
+        lines.append(f"✋ מספר בעלים: {info['owner_count']}")
+    if info.get("ownership_type"):
+        lines.append(f"🏢 בעלות: {info['ownership_type']}")
+    if info.get("first_road_date"):
+        lines.append(f"🛣 עלייה לכביש: {info['first_road_date']}")
+    if info.get("test_valid_until"):
+        lines.append(f"🔩 טסט בתוקף עד: {info['test_valid_until']}")
+    elif info.get("last_test"):
+        lines.append(f"🔩 טסט אחרון: {info['last_test']}")
 
     return "\n".join(lines)
 
