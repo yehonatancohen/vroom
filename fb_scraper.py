@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import random
 import re
 from datetime import datetime
@@ -42,9 +43,15 @@ def build_fb_url(cfg: dict) -> str:
         params["maxMileage"] = cfg["km_max"]
 
     if FB_LOCATION_ID:
+        # /{location_id}/vehicles — scopes to a specific city/country.
+        # Find your city's ID: open FB Marketplace, change location, copy the
+        # numeric ID from the URL. Set it as FB_LOCATION_ID in .env
         base = f"{FB_MARKETPLACE_BASE}/{FB_LOCATION_ID}/vehicles"
     else:
-        base = f"{FB_MARKETPLACE_BASE}/vehicles"
+        # /category/vehicles — correct vehicle category but no location pin.
+        # FB will default to San Francisco for unauthenticated users.
+        # Set FB_LOCATION_ID in .env to fix the location.
+        base = f"{FB_MARKETPLACE_BASE}/category/vehicles"
 
     if params:
         return f"{base}?{urlencode(params)}"
@@ -122,6 +129,7 @@ async def _extract_cards(page) -> list[dict]:
                 elif city is None and t and not re.match(r'^\d', t) and "₪" not in t:
                     city = t.split("·")[0].strip()
 
+            logger.debug("FB card: id=%s title=%r price=%s city=%r", listing_id, title, price, city)
             cards.append({
                 "listing_id": listing_id,
                 "title": title,
@@ -217,12 +225,23 @@ async def scrape_fb(cfg: dict, since: Optional[datetime] = None) -> ScrapeResult
             try:
                 await page.goto(url, timeout=45000, wait_until="networkidle")
             except Exception as e:
-                logger.warning("FB: page navigation failed: %s", e)
-                await browser.close()
-                return ScrapeResult([], 0, 0, 0)
+                # networkidle can time out on heavy pages — fall through and try anyway
+                logger.warning("FB: navigation warning (continuing): %s", e)
+
+            # Log where we actually landed (helps diagnose redirects / login walls)
+            logger.info("FB: landed on %s", page.url)
 
             await _dismiss_modal(page)
-            await asyncio.sleep(random.uniform(1.5, 3.0))
+            # Scroll down to trigger lazy-loaded listing cards
+            await page.evaluate("window.scrollTo(0, 600)")
+            await asyncio.sleep(random.uniform(2.0, 3.5))
+
+            # Save page HTML when FB_DEBUG=1 for diagnosing selector/content issues
+            if os.environ.get("FB_DEBUG"):
+                html = await page.content()
+                with open("fb_debug_page.html", "w", encoding="utf-8") as f:
+                    f.write(html)
+                logger.info("FB: debug HTML saved to fb_debug_page.html")
 
             raw_cards = await _extract_cards(page)
             total_on_page = len(raw_cards)
@@ -245,12 +264,18 @@ async def scrape_fb(cfg: dict, since: Optional[datetime] = None) -> ScrapeResult
             filtered_by_brand = 0
 
             brands_filter = cfg.get("brands", [])
+            model_filter = cfg.get("model_filter", [])
 
             for card in unseen_cards:
                 title = card.get("title") or ""
-                # Simple brand filter based on title
+                # Brand filter based on title
                 if brands_filter:
                     if not any(brand in title for brand in brands_filter):
+                        filtered_by_brand += 1
+                        continue
+                # Model filter based on title
+                if model_filter:
+                    if not any(kw.lower() in title.lower() for kw in model_filter):
                         filtered_by_brand += 1
                         continue
 

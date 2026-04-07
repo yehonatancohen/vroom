@@ -61,7 +61,7 @@ async def _deny(update: Update):
 # Scan logic
 # ---------------------------------------------------------------------------
 
-async def run_scan(app: Application, manual: bool = False):
+async def run_scan(app: Application, manual: bool = False, since_override: datetime | None = None):
     global _next_scan_time
     cfg = db.get_config()
     logger.info("Running scan with config: %s (manual=%s)", cfg, manual)
@@ -69,7 +69,9 @@ async def run_scan(app: Application, manual: bool = False):
     last_scan = db.get_last_scan_time()
     scan_started_at = datetime.now()
 
-    if manual:
+    if since_override is not None:
+        since = since_override
+    elif manual:
         # Show everything from the past week, regardless of last scan time
         one_week_ago = scan_started_at - timedelta(weeks=1)
         since = min(last_scan, one_week_ago) if last_scan else one_week_ago
@@ -239,8 +241,21 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return await _deny(update)
+
+    since_override = None
+    arg = (context.args[0].strip().lower() if context.args else "")
+    if arg:
+        now = datetime.now()
+        if arg == "24h":
+            since_override = now - timedelta(hours=24)
+        elif arg == "7d":
+            since_override = now - timedelta(days=7)
+        else:
+            await update.message.reply_text("❌ פורמט לא מוכר. שימוש: /scan / /scan 24h / /scan 7d")
+            return
+
     await update.message.reply_text("🔍 מתחיל סריקה...")
-    await run_scan(context.application, manual=True)
+    await run_scan(context.application, manual=True, since_override=since_override)
 
 
 async def cmd_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -273,6 +288,7 @@ async def cmd_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _config_main_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton("🏷 מותגים", callback_data="cfg:brands")],
+        [InlineKeyboardButton("🚘 דגמים", callback_data="cfg:models")],
         [InlineKeyboardButton("💰 טווח מחיר", callback_data="cfg:price")],
         [InlineKeyboardButton("🛣 ק\"מ מקסימום", callback_data="cfg:km")],
         [InlineKeyboardButton("📅 טווח שנים", callback_data="cfg:year")],
@@ -425,6 +441,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=_config_main_keyboard(),
         )
 
+    elif data == "cfg:models":
+        current = cfg.get("model_filter", [])
+        current_str = ", ".join(current) if current else "לא מוגדר"
+        await _prompt_text_input(
+            query,
+            "models",
+            f"דגמים נוכחיים: {current_str}\n"
+            "שלח רשימת דגמים מופרדים בפסיקים (למשל: מאזדה 2, מאזדה 3, סוויפט)\n"
+            "לביטול הפילטר: שלח ריק",
+        )
+
     elif data == "cfg:price":
         await _prompt_text_input(
             query,
@@ -485,7 +512,18 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     text = (update.message.text or "").strip()
 
     try:
-        if field == "km":
+        if field == "models":
+            if not text:
+                db.set_config_key("model_filter", [])
+                await update.message.reply_text("✅ פילטר דגמים בוטל — כל הדגמים יוצגו.")
+            else:
+                models = [m.strip() for m in text.split(",") if m.strip()]
+                db.set_config_key("model_filter", models)
+                await update.message.reply_text(
+                    f"✅ פילטר דגמים עודכן: {', '.join(models)}"
+                )
+
+        elif field == "km":
             val = int(text.replace(",", "").replace(" ", ""))
             db.set_config_key("km_max", val)
             await update.message.reply_text(f"✅ ק\"מ מקסימום עודכן ל־{val:,}.")

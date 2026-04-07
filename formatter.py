@@ -43,6 +43,9 @@ def format_config(cfg: dict) -> str:
     brands = cfg.get("brands", [])
     brands_str = ", ".join(brands) if brands else "הכל"
 
+    model_filter = cfg.get("model_filter", [])
+    models_str = ", ".join(model_filter) if model_filter else "הכל"
+
     interval_label = str(cfg.get("scan_interval", 30))
     for val, label in INTERVAL_OPTIONS:
         if val == cfg.get("scan_interval"):
@@ -61,6 +64,7 @@ def format_config(cfg: dict) -> str:
     lines = [
         "⚙️ *הגדרות נוכחיות*",
         f"🏷 מותגים: {brands_str}",
+        f"🚘 דגמים: {models_str}",
         f"💰 מחיר: ₪{cfg.get('price_min', 0):,} – ₪{cfg.get('price_max', 200000):,}",
         f"🛣 ק\"מ מקסימום: {cfg.get('km_max', 300000):,}",
         f"📅 שנים: {cfg.get('year_min', 2010)} – {cfg.get('year_max', 2025)}",

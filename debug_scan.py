@@ -5,6 +5,7 @@ Usage:
     python debug_scan.py              # uses config from DB (or defaults)
     python debug_scan.py --fb-only    # skip Yad2
     python debug_scan.py --yad2-only  # skip FB Marketplace
+    python debug_scan.py --fb-only --debug   # also save fb_debug_page.html
 
 Keep this script in sync with fb_scraper.scrape_fb() and scraper.scrape()
 when changing scraper interfaces or config keys.
@@ -12,7 +13,7 @@ when changing scraper interfaces or config keys.
 import asyncio
 import argparse
 import logging
-import sys
+import os
 from datetime import datetime, timedelta
 
 import db
@@ -36,7 +37,6 @@ def _print_results(label: str, result) -> None:
           f"listings={len(result.listings)}")
     print(f"{'='*60}")
     for listing in result.listings:
-        # Strip markdown for plain terminal output
         text = formatter.format_listing(listing)
         text = text.replace("*", "").replace("[לצפייה במודעה]", "")
         print(text)
@@ -81,11 +81,19 @@ async def main(skip_yad2: bool, skip_fb: bool) -> None:
             len(fb_result.listings if fb_result else [])
     print(f"\nTotal listings: {total}")
 
+    if not skip_fb and os.environ.get("FB_DEBUG"):
+        print("\nfb_debug_page.html saved — open it in a browser to see what FB returned.")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Debug scan for both scrapers")
     parser.add_argument("--fb-only", action="store_true", help="Skip Yad2")
     parser.add_argument("--yad2-only", action="store_true", help="Skip FB Marketplace")
+    parser.add_argument("--debug", action="store_true",
+                        help="Save FB page HTML to fb_debug_page.html for inspection")
     args = parser.parse_args()
+
+    if args.debug:
+        os.environ["FB_DEBUG"] = "1"
 
     asyncio.run(main(skip_yad2=args.fb_only, skip_fb=args.yad2_only))

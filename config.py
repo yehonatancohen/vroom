@@ -12,6 +12,7 @@ FB_LOCATION_ID = os.getenv("FB_LOCATION_ID", "")  # set to override; empty = use
 
 DEFAULT_CONFIG = {
     "brands": [],           # empty = all brands
+    "model_filter": [],     # empty = all models; list of substrings matched against listing title
     "price_min": 0,
     "price_max": 200000,
     "km_max": 300000,
@@ -42,6 +43,7 @@ SUPPORTED_BRANDS = [
     "רנו",       # Renault
     "סאב",       # Saab
     "וולוו",     # Volvo
+    "דייהטסו",   # Daihatsu
 ]
 
 INTERVAL_OPTIONS = [
@@ -51,6 +53,8 @@ INTERVAL_OPTIONS = [
     (120, "שעתיים"),
     (360, "6 שעות"),
     (720, "12 שעות"),
+    (1440, "24 שעות"),
+    (10080, "שבוע"),
 ]
 
 MAX_RESULTS_OPTIONS = [

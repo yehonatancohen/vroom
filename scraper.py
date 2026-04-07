@@ -344,6 +344,13 @@ def _matches_brands(listing: "Listing", brands: list[str]) -> bool:
     return any(b in brand or b in title for b in brands)
 
 
+def _matches_model_filter(listing: "Listing", model_filter: list[str]) -> bool:
+    if not model_filter:
+        return True
+    title = (listing.title or "").lower()
+    return any(kw.lower() in title for kw in model_filter)
+
+
 def _extract_items(data: dict) -> list[dict]:
     feed = data.get("data", data)
     if isinstance(feed, dict):
@@ -391,6 +398,7 @@ def scrape(cfg: dict, since: Optional[datetime] = None) -> ScrapeResult:
         raw_items = _extract_from_html(html, url)
 
     brands_filter = cfg.get("brands", [])
+    model_filter = cfg.get("model_filter", [])
     listings = []
     total_on_page = 0
     filtered_by_brand = 0
@@ -402,9 +410,11 @@ def scrape(cfg: dict, since: Optional[datetime] = None) -> ScrapeResult:
 
         total_on_page += 1
 
-        # Quick brand pre-filter using search-result data before fetching detail
+        # Quick brand+model pre-filter using search-result data before fetching detail
         pre = _parse_listing(item)
         if not pre or not _matches_brands(pre, brands_filter):
+            continue
+        if not _matches_model_filter(pre, model_filter):
             continue
 
         filtered_by_brand += 1
